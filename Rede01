@@ -1,0 +1,212 @@
+# ===================================================================
+# 1. IMPORTAÇÃO DAS BIBLIOTECAS
+# ===================================================================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# TensorFlow e Keras para a construção da CNN
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, Flatten, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+
+# Scikit-learn para pré-processamento e avaliação
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, confusion_matrix
+
+print("TensorFlow Version:", tf.__version__)
+
+# ===================================================================
+# 2. SIMULAÇÃO E CARGA DE DADOS
+# ===================================================================
+# No projeto real, você carregaria dados de um CSV, Parquet, ou banco de dados.
+# Aqui, vamos simular dados para demonstrar o conceito.
+
+def gerar_dados_processo(n_samples=10000, n_features=4):
+    """
+    Simula dados de um processo industrial com períodos normais e anômalos.
+    Features: Temperatura, Nível, Fluxo, Pressão.
+    Target: 0 para Golden Batch, 1 para Anomalia.
+    """
+    time = np.arange(n_samples)
+    data = np.zeros((n_samples, n_features))
+    labels = np.zeros(n_samples)
+
+    # Período "Golden Batch" (comportamento senoidal com ruído)
+    for i in range(n_features):
+        data[:, i] = 100 + np.sin(time / (50 + i*10)) * (10 + i) + np.random.normal(0, 0.5, n_samples)
+
+    # Introduzindo anomalias (ex: picos, mudanças de nível)
+    # Anomalia 1: Pico súbito de temperatura e fluxo
+    data[2000:2100, 0] += 15  # Pico de temp
+    data[2000:2100, 2] -= 10  # Queda de fluxo
+    labels[2000:2100] = 1
+
+    # Anomalia 2: Oscilação de alta frequência no nível
+    data[5000:5500, 1] += np.sin(time[5000:5500] * 5) * 5
+    labels[5000:5500] = 1
+    
+    # Anomalia 3: Drift na pressão
+    data[8000:, 3] += np.linspace(0, 10, n_samples - 8000)
+    labels[8000:] = 1
+
+    df = pd.DataFrame(data, columns=['Temperatura', 'Nivel', 'Fluxo', 'Pressao'])
+    df['Anomalia'] = labels
+    return df
+
+df_processo = gerar_dados_processo()
+
+print("Formato dos dados gerados:", df_processo.shape)
+print("Distribuição das classes:")
+print(df_processo['Anomalia'].value_counts())
+df_processo.head()
+
+# Visualização dos dados simulados
+df_processo.plot(subplots=True, figsize=(15, 8), title="Dados Simulados do Processo Industrial")
+plt.show()
+
+# ===================================================================
+# 3. PRÉ-PROCESSAMENTO E PREPARAÇÃO DOS DADOS
+# ===================================================================
+# Extrair features (X) e target (y)
+features = ['Temperatura', 'Nivel', 'Fluxo', 'Pressao']
+target = 'Anomalia'
+
+X = df_processo[features].values
+y = df_processo[target].values
+
+# --- Normalização/Escalonamento ---
+# Essencial para que a rede neural aprenda corretamente
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# --- Estruturação para CNN 1D ---
+# Transformamos os dados em "janelas" de tempo. A CNN analisará
+# uma sequência de observações para fazer uma previsão.
+def criar_sequencias(X, y, sequence_length=60):
+    """Cria sequências de dados para a entrada da CNN 1D."""
+    X_sequences, y_sequences = [], []
+    for i in range(len(X) - sequence_length):
+        X_sequences.append(X[i:i + sequence_length])
+        # A label da sequência é definida pelo último ponto da janela
+        y_sequences.append(y[i + sequence_length - 1])
+    return np.array(X_sequences), np.array(y_sequences)
+
+SEQUENCE_LENGTH = 60 # Cada amostra terá 60 pontos de tempo
+N_FEATURES = len(features)
+
+X_seq, y_seq = criar_sequencias(X_scaled, y, SEQUENCE_LENGTH)
+
+print(f"Formato das sequências de entrada (X): {X_seq.shape}")
+print(f"Formato dos rótulos de saída (y): {y_seq.shape}")
+# Formato de X: (n_amostras, tamanho_da_sequencia, n_features)
+
+# ===================================================================
+# 4. DIVISÃO DOS DADOS EM TREINO, VALIDAÇÃO E TESTE
+# ===================================================================
+X_train, X_test, y_train, y_test = train_test_split(
+    X_seq, y_seq, test_size=0.2, random_state=42, stratify=y_seq
+)
+
+print(f"Treino: {X_train.shape}, Teste: {X_test.shape}")
+
+# ===================================================================
+# 5. CONSTRUÇÃO DO MODELO CNN 1D
+# ===================================================================
+# A arquitetura é similar à do projeto de galáxias, mas com camadas 1D.
+
+model = Sequential(name="Detector_Anomalias_Vidro_Plano")
+
+# Camada Convolucional 1D para extrair padrões temporais
+model.add(Conv1D(filters=64, kernel_size=3, activation='relu', input_shape=(SEQUENCE_LENGTH, N_FEATURES)))
+model.add(MaxPooling1D(pool_size=2))
+model.add(Dropout(0.3))
+
+# Segunda camada convolucional
+model.add(Conv1D(filters=128, kernel_size=3, activation='relu'))
+model.add(MaxPooling1D(pool_size=2))
+model.add(Dropout(0.4))
+
+# Achatamento para conectar com as camadas densas
+model.add(Flatten())
+
+# Camada Densa (Totalmente Conectada)
+model.add(Dense(100, activation='relu'))
+model.add(Dropout(0.5))
+
+# Camada de Saída
+# Usamos 'sigmoid' para classificação binária (Golden Batch vs. Anomalia)
+model.add(Dense(1, activation='sigmoid'))
+
+# Sumário do modelo
+model.summary()
+
+# ===================================================================
+# 6. COMPILAÇÃO E TREINAMENTO DO MODELO
+# ===================================================================
+model.compile(
+    optimizer=Adam(learning_rate=0.001),
+    loss='binary_crossentropy', # Adequada para classificação binária
+    metrics=['accuracy']
+)
+
+# Treinamento
+history = model.fit(
+    X_train,
+    y_train,
+    epochs=15, # Um número menor para o exemplo
+    batch_size=64,
+    validation_split=0.2, # Usar parte dos dados de treino para validação
+    verbose=1
+)
+
+# ===================================================================
+# 7. AVALIAÇÃO DO MODELO
+# ===================================================================
+
+# --- Plotar histórico de treinamento ---
+plt.figure(figsize=(12, 5))
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='Acurácia de Treino')
+plt.plot(history.history['val_accuracy'], label='Acurácia de Validação')
+plt.title('Acurácia do Modelo')
+plt.xlabel('Época')
+plt.ylabel('Acurácia')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='Perda de Treino')
+plt.plot(history.history['val_loss'], label='Perda de Validação')
+plt.title('Perda do Modelo')
+plt.xlabel('Época')
+plt.ylabel('Perda')
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# --- Avaliação no conjunto de teste ---
+loss, accuracy = model.evaluate(X_test, y_test, verbose=0)
+print(f"\nAcurácia no conjunto de teste: {accuracy*100:.2f}%")
+print(f"Perda no conjunto de teste: {loss:.4f}")
+
+# --- Métricas detalhadas (Precisão, Recall, F1-Score) ---
+y_pred_probs = model.predict(X_test)
+y_pred_classes = (y_pred_probs > 0.5).astype(int).flatten()
+
+print("\nRelatório de Classificação:")
+print(classification_report(y_test, y_pred_classes, target_names=['Golden Batch', 'Anomalia']))
+
+# --- Matriz de Confusão ---
+cm = confusion_matrix(y_test, y_pred_classes)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['Golden Batch', 'Anomalia'],
+            yticklabels=['Golden Batch', 'Anomalia'])
+plt.title('Matriz de Confusão')
+plt.ylabel('Classe Verdadeira')
+plt.xlabel('Classe Prevista')
+plt.show()
+
